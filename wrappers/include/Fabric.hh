@@ -4,6 +4,8 @@
 
 #include <rdma/fabric.h>
 #include <rdma/fi_domain.h>
+#include <rdma/fi_endpoint.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -272,5 +274,97 @@ private:
     AccessDomain domain_;
 };
 
+class ActiveEndpoint {
+public:
+
+    ActiveEndpoint(AccessDomain &domain, FabricInfo &info) : ref(new std::atomic_uint(1)), domain_(domain),
+                                                             info_(info) {
+        ERRCHK(fi_endpoint(domain.get(), info.get(),
+                           &ep, nullptr));
+    }
+
+    ActiveEndpoint(const ActiveEndpoint &other) : domain_(other.domain_), info_(other.info_) {
+        other.ref->fetch_add(1);
+        ep = other.ep;
+        ref = other.ref;
+    }
+
+    ActiveEndpoint(ActiveEndpoint &&other) noexcept: domain_(std::move(other.domain_)), info_(std::move(other.info_)) {
+        ep = other.ep;
+        ref = other.ref;
+        other.ep = nullptr;
+        other.ref = nullptr;
+    }
+
+    ~ActiveEndpoint() {
+        if (ep) {
+            std::cerr << "Closing endpoint" << std::endl;
+            ERRCHK(fi_close(&ep->fid));
+        }
+    }
+
+    fid_ep *operator->() {
+        return ep;
+    }
+
+    fid_ep *get() {
+        return ep;
+    }
+
+    void enable() {
+        ERRCHK(fi_enable(ep));
+    }
+
+    //void bind(CompletionQueue &cq, uint64_t flags) {
+    //    ERRCHK(fi_ep_bind(ep, &cq->fid, flags));
+    //    boundCQs.push_front(cq);
+    //}
+
+private:
+    fid_ep *ep;
+    std::atomic_uint *ref;
+    AccessDomain domain_;
+    FabricInfo info_;
+};
+
+class AddressVector {
+public:
+
+    AddressVector(AccessDomain &domain, fi_av_attr *attr) : ref(new std::atomic_uint(1)), domain_(domain) {
+        ERRCHK(fi_av_open(domain.get(), attr, &av, nullptr));
+    }
+
+    AddressVector(const AddressVector &other) : domain_(other.domain_) {
+        av = other.av;
+        ref = other.ref;
+        ref->operator++();
+    }
+
+    AddressVector(AddressVector &&other) noexcept: domain_(std::move(other.domain_)) {
+        av = other.av;
+        ref = other.ref;
+        other.av = nullptr;
+        other.ref = nullptr;
+    }
+
+    ~AddressVector() {
+        if (av && ref->fetch_sub(1) - 1 == 0) {
+            ERRCHK(fi_close(&av->fid));
+        }
+    }
+
+    fid_av *operator->() {
+        return av;
+    }
+
+    fid_av *get() {
+        return av;
+    }
+
+private:
+    fid_av *av;
+    std::atomic_uint *ref;
+    AccessDomain domain_;
+};
 
 #endif //NETWORKLAYER_FABRICCXX_HH
