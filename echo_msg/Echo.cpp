@@ -23,6 +23,22 @@ compile: gcc Echo.cpp -lstdc++ -lfabric
 
 static char* dst_addr; // client specifies server
 
+int init_fabric() {
+	int err = 0; // specific libfabric error
+    int ret = 0;
+
+    // Get list of providers i.e. verbs, psm2, tcp
+    std::cout << "Getting fi provider" << std::endl;
+
+exit:
+    if (err) {
+        std::cerr << "ERROR (" << err << "): " << fi_strerror(-err) << std::endl;
+        ret = err;
+    }
+
+    return ret;
+}
+
 void usage() {
     std::cout << "Usage: ./Echo [optional server address]" << std::endl;
     std::cout << "            server address - remote server to connect to as a client." << std::endl;
@@ -50,5 +66,18 @@ int main(int argc, char **argv) {
         return -1;
 	}
 
-	return ret;
+	// Init fabric objects
+	if (ret = init_fabric()) goto exit;
+
+
+	exit: 
+		if (err) {
+	        std::cerr << "ERROR (" << err << "): " << fi_strerror(-err) << std::endl;
+	        ret = err;
+	    }
+
+	    // int rel_err = release_all();
+	    // if (!ret && rel_err) ret = rel_err;
+
+		return ret;
 }
