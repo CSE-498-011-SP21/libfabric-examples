@@ -1,1 +1,0 @@
-project(echo_msg)
