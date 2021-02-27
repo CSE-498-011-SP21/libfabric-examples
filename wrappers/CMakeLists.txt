@@ -6,3 +6,5 @@ target_link_libraries(Fabricxx INTERFACE fabric)
 
 add_executable(creation_test src/test.cc)
 target_link_libraries(creation_test PRIVATE Fabricxx)
+
+add_test(creation_test creation_test)
