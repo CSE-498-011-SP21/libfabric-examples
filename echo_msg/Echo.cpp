@@ -18,13 +18,18 @@
 #include <rdma/fi_rma.h>
 #include <rdma/fi_errno.h>
 
+static char *local_buf;
+static char *remote_buf;
 static struct fi_info *fi, *hints;
 static struct fid_fabric *fabric;
 static struct fid_domain *domain;
+static struct fid_ep *ep;
 static struct fi_cq_attr cq_attr;
 static struct fid_cq *tx_cq, *rx_cq;
+static struct fid_mr *mr;
 static struct fi_av_attr av_attr;
 static struct fid_av *av;
+static size_t max_msg_size = 4096;
 
 static char* dst_addr; // client specifies server
 
@@ -36,6 +41,14 @@ inline void callCheck(int err, const char *file, int line, bool abort=true) {
 		std::cout << "Error: " << err << " " << fi_strerror(-err) << " " << file << ":" << line << std::endl;
 		exit(0);
 	}
+}
+
+int check_malloc(char *first, char *second) {
+	int ret = 0;
+	if (!first || !second) {
+        ret = -1;
+    }
+    return ret;
 }
 
 
@@ -91,6 +104,59 @@ int init_fabric() {
     av_attr.name = NULL;
     safe_call(fi_av_open(domain, &av_attr, &av, NULL));
 
+    std::cout << "Done getting fi provider" << std::endl;
+
+    return ret;
+}
+
+int init_endpoint() {
+	int ret = 0;
+
+	// Create endpoints, the object used for communication. Typically associated with
+    // a single hardware NIC, they are conceptually similar to a socket.
+    std::cout << "Creating endpoint" << std::endl;
+    safe_call(fi_endpoint(domain, fi, &ep, NULL));
+
+    local_buf = (char*) malloc(max_msg_size);
+	remote_buf = (char*) malloc(max_msg_size);
+	safe_call(check_malloc(local_buf, remote_buf));
+	memset(local_buf, '\0', max_msg_size);
+	memset(remote_buf, '\0', max_msg_size);
+
+	std::cout << "Done creating endpoint" << std::endl;
+
+	return ret;
+}
+
+// Might need to change some of this to have correct endpoints
+int bind_endpoint() {
+	int ret = 0;
+	std::cout << "Binding endpoint" << std::endl;
+
+	// Bind AV to endpoint
+    std::cout << "Binding AV to EP" << std::endl;
+    safe_call(fi_ep_bind(ep, &av->fid, 0));
+
+    // Bind Tx CQ
+    std::cout << "Binding Tx CQ to EP" << std::endl; 
+    safe_call(fi_ep_bind(ep, &tx_cq->fid, FI_TRANSMIT));
+
+    // Bind Rx CQ
+    std::cout << "Binding Rx CQ to EP" << std::endl;
+    safe_call(fi_ep_bind(ep, &rx_cq->fid, FI_RECV));
+
+    // Enable EP
+    std::cout << "Enabling EP" << std::endl;
+    safe_call(fi_enable(ep));
+
+    // Register memory region for RDMA
+    std::cout << "Registering memory region" << std::endl;
+    safe_call(fi_mr_reg(domain, remote_buf, max_msg_size,
+                    FI_WRITE|FI_REMOTE_WRITE|FI_READ|FI_REMOTE_READ, 0,
+                    0, 0, &mr, NULL));
+
+    std::cout << "Done binding endpoint" << std::endl;
+
     return ret;
 }
 
@@ -101,7 +167,6 @@ void usage() {
 }
 
 int main(int argc, char **argv) {
-	int err = 0;
 	int ret = 0;
 
 	// Get command line args
@@ -124,16 +189,10 @@ int main(int argc, char **argv) {
 	// 1) Init fabric objects
 	safe_call(init_fabric());
 	// 2) Init endpoint
+	safe_call(init_endpoint());
+	// 3) Bind fabric to endpoint
+	safe_call(bind_endpoint());
 
 
-	exit: 
-		if (err) {
-	        std::cerr << "ERROR (" << err << "): " << fi_strerror(-err) << std::endl;
-	        ret = err;
-	    }
-
-	    // int rel_err = release_all();
-	    // if (!ret && rel_err) ret = rel_err;
-
-		return ret;
+	return ret;
 }
