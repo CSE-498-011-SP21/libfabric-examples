@@ -20,8 +20,11 @@
 
 static char *local_buf;
 static char *remote_buf;
-static struct fi_info *fi, *hints;
+static struct fi_info *fi_pep, *fi, *hints;
 static struct fid_fabric *fabric;
+static struct fi_eq_attr eq_attr;
+static struct fid_eq *eq;
+static struct fid_pep *pep;
 static struct fid_domain *domain;
 static struct fid_ep *ep;
 static struct fi_cq_attr cq_attr;
@@ -51,38 +54,86 @@ int check_malloc(char *first, char *second) {
     return ret;
 }
 
+int start_server() {
+	/*
+		Functions in example:
+		- ft_init
+		- ft_init_oob
+		- ft_getInfo
+		- fi_fabric
+		- fi_eq_open
+		- fi_passive_ep
+		- fi_pep_bind
+		- fi_listen
+    */
 
-int init_fabric() {
-    int ret = 0;
-
-    // Get list of providers i.e. verbs, psm2, tcp
-    std::cout << "Getting fi provider" << std::endl;
+	// Get list of providers i.e. verbs, psm2, tcp
+    std::cout << "Starting server" << std::endl;
     hints = fi_allocinfo();
     hints->caps = FI_MSG;
     //hints->ep_attr->type = FI_EP_RDM;
     hints->ep_attr->type = FI_EP_MSG;
-    if (dst_addr) {
+    if (dst_addr) { // Prob dont need this
         /* client */
-        safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, "4092", 0, hints, &fi));
+        safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, "4092", 0, hints, &fi_pep));
     } else {
         /* server */
-        safe_call(fi_getinfo(FI_VERSION(1, 6), NULL, "4092", FI_SOURCE, hints, &fi));
+        safe_call(fi_getinfo(FI_VERSION(1, 6), NULL, "4092", FI_SOURCE, hints, &fi_pep));
     }
 
     // fi is a linked list of providers. For now just use first one
-    std::cout << "Using provider: " << fi->fabric_attr->prov_name << std::endl;
+    std::cout << "Using provider: " << fi_pep->fabric_attr->prov_name << std::endl;
 
      // Create a fabric object. This is the parent of everything else.
     std::cout << "Creating fabric object" << std::endl;
-    safe_call(fi_fabric(fi->fabric_attr, &fabric, NULL));
+    safe_call(fi_fabric(fi_pep->fabric_attr, &fabric, NULL));
 
-    // Create a domain. This represents logical connection into fabric.
-    // For example, this may map to a physical NIC, and defines the boundary
-    // four fabric resources. Most other objects belong to a domain.
-    std::cout << "Creating domain" << std::endl;
-    safe_call(fi_domain(fabric, fi, &domain, NULL));
+    std::cout << "Creating event queue" << std::endl;
+    //memset(&eq_attr, 0, sizeof(eq_attr));
+    //eq_attr.wait_obj = FI_WAIT_UNSPEC;
+    //eq_attr.size = eq_attr.size;
+    safe_call(fi_eq_open(fabric, &eq_attr, &eq, NULL));
 
-    // Create a completion queue. This reports data transfer operation completions.
+    safe_call(fi_passive_ep(fabric, fi_pep, &pep, NULL));
+
+    safe_call(fi_pep_bind(pep, &eq->fid, 0));
+
+    safe_call(fi_listen(pep));
+
+
+    std::cout << "Done starting server" << std::endl;
+
+    return 0;
+}
+
+int retrieve_conn_req(struct fid_eq *eq, struct fi_info **fi) {
+	std::cout << "Retrieve Conn request" << std::endl;
+	struct fi_eq_cm_entry entry;
+	uint32_t event;
+	ssize_t rd;
+	int ret;
+
+	//safe_call(fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0));
+	rd = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+	if (rd != sizeof entry) {
+		return (int) rd;
+	}
+	std::cout << entry.info << std::endl;
+
+	*fi = entry.info;
+	if (event != FI_CONNREQ) {
+		ret = -FI_EOTHER;
+		return ret;
+	}
+
+	std::cout << "Done Retrieving Conn request" << std::endl;
+
+	return 0;
+}
+
+// I think alloc_active_res is for the queues
+int alloc_ep_res(struct fi_info *fi) {
+	// Create a completion queue. This reports data transfer operation completions.
     // Unlike fabric event queues, these are associated with a single hardware NIC.
     // Will create one for tx and one for rx
     std::cout << "Creating tx completion queue" << std::endl;
@@ -94,70 +145,40 @@ int init_fabric() {
     std::cout << "Creating rx completion queue" << std::endl;
     cq_attr.size = fi->rx_attr->size;
     safe_call(fi_cq_open(domain, &cq_attr, &rx_cq, NULL));
-
-    // Create an address vector. This allows connectionless endpoints to communicate
-    // without having to resolve addresses, such as IPv4, during data transfers.
-    std::cout << "Creating address vector" << std::endl;
-    memset(&av_attr, 0, sizeof(av_attr));
-    av_attr.type = fi->domain_attr->av_type ? fi->domain_attr->av_type : FI_AV_MAP;
-    av_attr.count = 1;
-    av_attr.name = NULL;
-    safe_call(fi_av_open(domain, &av_attr, &av, NULL));
-
-    std::cout << "Done getting fi provider" << std::endl;
-
-    return ret;
+	return 0;
 }
 
-int init_endpoint() {
-	int ret = 0;
+int alloc_active_res(struct fi_info *fi) {
+	safe_call(alloc_ep_res(fi));
+	safe_call(fi_endpoint(domain, fi, &ep, NULL));
+	return 0;
 
-	// Create endpoints, the object used for communication. Typically associated with
-    // a single hardware NIC, they are conceptually similar to a socket.
-    std::cout << "Creating endpoint" << std::endl;
-    safe_call(fi_endpoint(domain, fi, &ep, NULL));
-
-    local_buf = (char*) malloc(max_msg_size);
-	remote_buf = (char*) malloc(max_msg_size);
-	safe_call(check_malloc(local_buf, remote_buf));
-	memset(local_buf, '\0', max_msg_size);
-	memset(remote_buf, '\0', max_msg_size);
-
-	std::cout << "Done creating endpoint" << std::endl;
-
-	return ret;
 }
 
-// Might need to change some of this to have correct endpoints
-int bind_endpoint() {
-	int ret = 0;
-	std::cout << "Binding endpoint" << std::endl;
+int client_connect(void) {
+	std::cout << "Client Connect" << std::endl;
 
-	// Bind AV to endpoint
-    std::cout << "Binding AV to EP" << std::endl;
-    safe_call(fi_ep_bind(ep, &av->fid, 0));
+}
 
-    // Bind Tx CQ
-    std::cout << "Binding Tx CQ to EP" << std::endl; 
-    safe_call(fi_ep_bind(ep, &tx_cq->fid, FI_TRANSMIT));
+int server_connect(void) {
+	std::cout << "Server Connect" << std::endl;
 
-    // Bind Rx CQ
-    std::cout << "Binding Rx CQ to EP" << std::endl;
-    safe_call(fi_ep_bind(ep, &rx_cq->fid, FI_RECV));
+	safe_call(retrieve_conn_req(eq, &fi));
 
-    // Enable EP
-    std::cout << "Enabling EP" << std::endl;
-    safe_call(fi_enable(ep));
+	// Create a domain. This represents logical connection into fabric.
+    // For example, this may map to a physical NIC, and defines the boundary
+    // four fabric resources. Most other objects belong to a domain.
+    std::cout << "Creating domain" << std::endl;
+    safe_call(fi_domain(fabric, fi, &domain, NULL));
+    // maybe need to do fi_domain_bind(domain, &eq->fid, 0)
 
-    // Register memory region for RDMA
-    std::cout << "Registering memory region" << std::endl;
-    safe_call(fi_mr_reg(domain, remote_buf, max_msg_size,
-                    FI_WRITE|FI_REMOTE_WRITE|FI_READ|FI_REMOTE_READ, 0,
-                    0, 0, &mr, NULL));
+    safe_call(alloc_active_res(fi)); // Think this is my tx and rx queue
 
-    std::cout << "Done binding endpoint" << std::endl;
+    //safe_call(enable_ep_recv());
 
-    return ret;
+    //safe_call(accept_connection(ep, eq));
+
+	return 0;
 }
 
 void usage() {
@@ -187,12 +208,17 @@ int main(int argc, char **argv) {
 	}
 
 	// 1) Init fabric objects
-	safe_call(init_fabric());
+	//safe_call(init_fabric());
+	safe_call(start_server());
 	// 2) Init endpoint
-	safe_call(init_endpoint());
+	//safe_call(init_endpoint());
 	// 3) Bind fabric to endpoint
-	safe_call(bind_endpoint());
+	//safe_call(bind_endpoint());
 
+	ret = dst_addr ? client_connect() : server_connect();
+	if (ret) {
+		return ret;
+	}
 
 	return ret;
 }
