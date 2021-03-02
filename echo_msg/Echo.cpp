@@ -58,8 +58,8 @@ int start_server() {
 	/*
 		Functions in example:
 		- ft_init
-		- ft_init_oob
-		- ft_getInfo
+		- ft_init_oob // Dont think I need
+		- ft_getInfo // Since dont have ops (I think) just fi_getinfo()
 		- fi_fabric
 		- fi_eq_open
 		- fi_passive_ep
@@ -67,12 +67,16 @@ int start_server() {
 		- fi_listen
     */
 
-	// Get list of providers i.e. verbs, psm2, tcp
+	// Init
     std::cout << "Starting server" << std::endl;
     hints = fi_allocinfo();
     hints->caps = FI_MSG;
-    //hints->ep_attr->type = FI_EP_RDM;
     hints->ep_attr->type = FI_EP_MSG;
+
+    // getInfo for server. Assumes server is starting first
+    //safe_call(fi_getinfo(FI_VERSION(1, 6), NULL, "4092", FI_SOURCE, hints, &fi_pep));
+
+
     if (dst_addr) { // Prob dont need this
         /* client */
         safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, "4092", 0, hints, &fi_pep));
@@ -82,12 +86,13 @@ int start_server() {
     }
 
     // fi is a linked list of providers. For now just use first one
-    std::cout << "Using provider: " << fi_pep->fabric_attr->prov_name << std::endl;
+    //std::cout << "Using provider: " << fi_pep->fabric_attr->prov_name << std::endl;
 
      // Create a fabric object. This is the parent of everything else.
     std::cout << "Creating fabric object" << std::endl;
     safe_call(fi_fabric(fi_pep->fabric_attr, &fabric, NULL));
 
+    // create and open event queue. Dont think I need to allocate
     std::cout << "Creating event queue" << std::endl;
     //memset(&eq_attr, 0, sizeof(eq_attr));
     //eq_attr.wait_obj = FI_WAIT_UNSPEC;
@@ -100,12 +105,12 @@ int start_server() {
 
     safe_call(fi_listen(pep));
 
-
     std::cout << "Done starting server" << std::endl;
 
     return 0;
 }
 
+// I think this okay
 int retrieve_conn_req(struct fid_eq *eq, struct fi_info **fi) {
 	std::cout << "Retrieve Conn request" << std::endl;
 	struct fi_eq_cm_entry entry;
@@ -113,8 +118,9 @@ int retrieve_conn_req(struct fid_eq *eq, struct fi_info **fi) {
 	ssize_t rd;
 	int ret;
 
-	//safe_call(fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0));
+	// A synchronous (blocking) read of an event queue
 	rd = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+	//rd = fi_eq_read(eq, &event, &entry, sizeof(entry), 0);
 	if (rd != sizeof entry) {
 		return (int) rd;
 	}
@@ -155,30 +161,90 @@ int alloc_active_res(struct fi_info *fi) {
 
 }
 
-int client_connect(void) {
-	std::cout << "Client Connect" << std::endl;
-
-}
-
 int server_connect(void) {
+	/*
+		Functions in example:
+		- retrieve connection request
+		- fi_domain
+		- fi_domain_bind // maybe
+		- allocate resources
+		- enable_ep_recv // try just fi_enable(ep)
+		- accept connection
+    */
 	std::cout << "Server Connect" << std::endl;
 
+	// Retrieve connection request
 	safe_call(retrieve_conn_req(eq, &fi));
 
-	// Create a domain. This represents logical connection into fabric.
-    // For example, this may map to a physical NIC, and defines the boundary
-    // four fabric resources. Most other objects belong to a domain.
+	// Domain
     std::cout << "Creating domain" << std::endl;
     safe_call(fi_domain(fabric, fi, &domain, NULL));
     // maybe need to do fi_domain_bind(domain, &eq->fid, 0)
 
-    safe_call(alloc_active_res(fi)); // Think this is my tx and rx queue
+    // Allocate resources
+    safe_call(alloc_active_res(fi)); // Think this is my tx and rx queue. Also clean up
 
-    //safe_call(enable_ep_recv());
+    safe_call(fi_enable(ep));
 
-    //safe_call(accept_connection(ep, eq));
-
+    // Accept connection
 	return 0;
+}
+
+// Think okay
+int open_fabric_res(void) {
+	std::cout << "Opening fabric res" << std::endl;
+	safe_call(fi_fabric(fi_pep->fabric_attr, &fabric, NULL));
+	safe_call(fi_eq_open(fabric, &eq_attr, &eq, NULL));
+	safe_call(fi_domain(fabric, fi_pep, &domain, NULL));
+	// Dont think I need to bind domain
+	std::cout << "Done opening fabric res" << std::endl;
+	return 0;
+}
+
+int connect_ep(struct fid_ep *ep, struct fid_eq *eq, fi_addr_t *remote_addr) {
+	safe_call(fi_connect(ep, remote_addr, NULL, 0));
+	return 0;
+}
+
+int client_connect(void) {
+	/*
+		Functions in example:
+		- ft_init
+		- ft_init_oob // Dont think I need
+		- ft_getInfo // Since dont have ops (I think) just fi_getinfo()
+		- ft_open_fabric_res
+		- ft_alloc_active_res
+		- ft_enable_ep_recv
+		- ft_connect_ep
+    */
+
+	// Init
+    std::cout << "Starting client" << std::endl;
+    hints = fi_allocinfo();
+    hints->caps = FI_MSG;
+    hints->ep_attr->type = FI_EP_MSG;
+
+    // getinfo 127.0. 0.1
+    safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, "4092", 0, hints, &fi_pep))
+
+    safe_call(open_fabric_res());
+
+    // Allocate resources
+    safe_call(alloc_active_res(fi_pep));
+
+    safe_call(fi_enable(ep));
+
+    std::cout << fi_pep->dest_addr << std::endl;
+
+    safe_call(connect_ep(ep, eq, fi_pep->dest_addr));
+    // int ret = fi_connect(ep, fi_pep->dest_addr, NULL, 0);
+    // if (ret) {
+    // 	std::cout << "Fucking idiot" << std::endl;
+    // }
+
+    std::cout << "Done starting client" << std::endl;
+
+    return 0;
 }
 
 void usage() {
@@ -209,7 +275,9 @@ int main(int argc, char **argv) {
 
 	// 1) Init fabric objects
 	//safe_call(init_fabric());
-	safe_call(start_server());
+	if (!dst_addr) {
+		safe_call(start_server());
+	}
 	// 2) Init endpoint
 	//safe_call(init_endpoint());
 	// 3) Bind fabric to endpoint
@@ -218,6 +286,14 @@ int main(int argc, char **argv) {
 	ret = dst_addr ? client_connect() : server_connect();
 	if (ret) {
 		return ret;
+	}
+
+	if (dst_addr) {
+		// Client stuff
+
+	} else {
+		// Server stuff
+
 	}
 
 	return ret;
