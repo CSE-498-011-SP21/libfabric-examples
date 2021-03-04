@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
 		safe_call(fi_enable(ep));
 		// Connect
 		safe_call(fi_connect(ep, fi->dest_addr, NULL, 0));
-		safe_call(retrieve_conn_req(eq, &fi));
+		//safe_call(retrieve_conn_req(eq, &fi));
 
 
 
