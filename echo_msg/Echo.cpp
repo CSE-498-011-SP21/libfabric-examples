@@ -31,6 +31,7 @@ char *local_buf;
 char *remote_buf;
 
 const char *port = "8080";
+const std::string address = "127.0.0.1";
 int max_msg_size = 4096;
 const char* dst_addr;
 
@@ -75,73 +76,103 @@ int wait_for_completion(struct fid_cq *cq) {
 	}
 }
 
-// I think this okay
 int retrieve_conn_req(struct fid_eq *eq, struct fi_info **fi) {
-	std::cout << "Retrieving Conn request" << std::endl;
+    struct fi_eq_cm_entry entry;
+	uint32_t event;
+	ssize_t rd;
+	int ret;
+
+	rd = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
+	if (rd != sizeof entry) {
+		//FT_PROCESS_EQ_ERR(rd, eq, "fi_eq_sread", "listen");
+		return (int) rd;
+	}
+
+	*fi = entry.info;
+	if (event != FI_CONNREQ) {
+		//fprintf(stderr, "Unexpected CM event %d\n", event);
+		ret = -FI_EOTHER;
+		return ret;
+	}
+
+	return 0;
+}
+
+int complete_connect(struct fid_ep *ep, struct fid_eq *eq)
+{
 	struct fi_eq_cm_entry entry;
 	uint32_t event;
 	ssize_t rd;
 	int ret;
 
-	std::cout << "Waiting..." << std::endl;
-
-	// A synchronous (blocking) read of an event queue
 	rd = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
-	//rd = fi_eq_read(eq, &event, &entry, sizeof(entry), 0);
-	if (ret > 0) {
-		std::cout << "Returned " << rd << std::endl;
-		return 0;
-	}
-	if (ret != -FI_EAGAIN) {
+	if (rd != sizeof(entry)) {
+		//FT_PROCESS_EQ_ERR(rd, eq, "fi_eq_sread", "accept");
+		ret = (int) rd;
 		return ret;
 	}
 
-	std::cout << "Done Retrieving Conn request" << std::endl;
+	if (event != FI_CONNECTED || entry.fid != &ep->fid) {
+		//fprintf(stderr, "Unexpected CM event %d fid %p (ep %p)\n", event, entry.fid, ep);
+		ret = -FI_EOTHER;
+		return ret;
+	}
 
-	return -1;
+	return 0;
 }
 
-int main(int argc, char **argv) {
-	hints = fi_allocinfo();
-    hints->caps = FI_MSG;
-    hints->ep_attr->type = FI_EP_MSG;
+int start_server(void) {
+	// Init
+	safe_call(fi_getinfo(FI_VERSION(1, 6), address.c_str(), port, FI_MSG, hints, &fi_pep));
 
-    // Get command line args
-	if (argc < 2) { // Server
-		std::cout << "Running as SERVER" << std::endl;
-		safe_call(fi_getinfo(FI_VERSION(1, 6), NULL, port, FI_SOURCE, hints, &fi));
-	} else if (argc == 2) { // Client
-		dst_addr = argv[1];
-		std::cout <<  "Running as CLIENT - server addr=" << dst_addr << std::endl;
-		safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, port, 0, hints, &fi));
-	} else {
-		std::cout << "Too many arguments!" << std::endl;
-        return -1;
-	}
+	// Create a fabric object.
+    std::cout << "Creating fabric" << std::endl;
+    safe_call(fi_fabric(fi_pep->fabric_attr, &fabric, NULL));
+
+    // Fabric Domain - maybe dont need
+    //std::cout << "Creating domain" << std::endl;
+    //safe_call(fi_domain(fabric, fi, &domain, NULL));
+
+    // Create and open event queue
+    std::cout << "Creating event queue" << std::endl;
+    memset(&eq_attr, 0, sizeof(eq_attr));
+    eq_attr.wait_obj = FI_WAIT_UNSPEC;
+    eq_attr.size = eq_attr.size; // Might need idk
+    safe_call(fi_eq_open(fabric, &eq_attr, &eq, NULL));
+
+    // Create pep
+    std::cout << "Creating passive endpoint" << std::endl;
+    safe_call(fi_passive_ep(fabric, fi_pep, &pep, nullptr));
+
+    // bind pep to eq
+    std::cout << "Binding pep to eq" << std::endl;
+    safe_call(fi_pep_bind(pep, &eq->fid, 0));
+
+    // listen
+    std::cout << "Listen" << std::endl;
+    safe_call(fi_listen(pep));
+
+    return 0;
+}
+
+int client_connect() {
+	// Init
+	safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, port, 0, hints, &fi));
 
 	// Create a fabric object.
     std::cout << "Creating fabric" << std::endl;
     safe_call(fi_fabric(fi->fabric_attr, &fabric, NULL));
 
-    // Fabric Domain
-    std::cout << "Creating domain" << std::endl;
-	safe_call(fi_domain(fabric, fi, &domain, NULL));
-
-	// Create and open event queue
+    // Create and open event queue
     std::cout << "Creating event queue" << std::endl;
     memset(&eq_attr, 0, sizeof(eq_attr));
     eq_attr.wait_obj = FI_WAIT_UNSPEC;
-    //eq_attr.size = eq_attr.size; // Might need idk
+    eq_attr.size = eq_attr.size; // Might need idk
     safe_call(fi_eq_open(fabric, &eq_attr, &eq, NULL));
 
-    // Might actually need address vector
-
-    // Think I can just bind eq to the domain
-    //safe_call(fi_domain_bind(domain, &eq->fid, FI_REG_MR));
-
-    // If not then have to make a passive ep then bind it to eq
-    //safe_call(fi_passive_ep(fabric, fi_pep, &pep, nullptr));
-    //safe_call(fi_pep_bind(pep, &eq->fid, 0)); // Might need flags, TBD
+    // Fabric Domain
+    std::cout << "Creating domain" << std::endl;
+    safe_call(fi_domain(fabric, fi, &domain, NULL));
 
     // Create rx and tx completion queues
     std::cout << "Creating tx completion queue" << std::endl;
@@ -154,7 +185,6 @@ int main(int argc, char **argv) {
     cq_attr.size = fi->rx_attr->size;
     safe_call(fi_cq_open(domain, &cq_attr, &rx_cq, NULL));
 
-
     // Endpoint
     safe_call(fi_endpoint(domain, fi, &ep, NULL))
 
@@ -163,99 +193,61 @@ int main(int argc, char **argv) {
     safe_call(fi_ep_bind(ep, &tx_cq->fid, FI_TRANSMIT));
     std::cout << "Binding RX CQ to EP" << std::endl;
     safe_call(fi_ep_bind(ep, &rx_cq->fid, FI_RECV));
+    std::cout << "Binding EQ to EP" << std::endl;
+    safe_call(fi_ep_bind(ep, &eq->fid, 0))
 
-    // Malloc Buffers
-    fid_mr *mr;
-	local_buf = new char[max_msg_size];
-	remote_buf = new char[max_msg_size];
-	memset(remote_buf, 0, max_msg_size);
+    std::cout << "Enabling endpoint" << std::endl;
+    safe_call(fi_enable(ep));
 
-	safe_call(fi_mr_reg(domain, remote_buf, max_msg_size,
-					FI_SEND | FI_RECV, 0,
-					0, 0, &mr, NULL));
+    safe_call(fi_connect(ep, fi->dest_addr, NULL, 0));
 
-
-    // Enable the endpoint
- //    std::cout << "Enabling EP" << std::endl;
-	 //safe_call(fi_enable(ep));
-
-	// Specify client vs server behavior
-	if (dst_addr) { // Client
-		std::cout << "Connecting client" << std::endl;
-		// Create endpoint
-		//safe_call(fi_endpoint(domain, fi, &ep, NULL));
-		// Bind to eq
-		safe_call(fi_ep_bind(ep, &eq->fid, 0))
-		safe_call(fi_enable(ep));
-		// Connect
-		safe_call(fi_connect(ep, fi->dest_addr, NULL, 0));
-		//safe_call(retrieve_conn_req(eq, &fi));
-
-
-
-
-		// Communication Stuff
-		assert(sizeof(size_t) == sizeof(uint64_t));
-
-		size_t addrlen = 0;
-        fi_getname(&ep->fid, nullptr, &addrlen);
-        char *addr = new char[addrlen];
-        safe_call(fi_getname(&ep->fid, addr, &addrlen));
-
-        //std::cout << "Client: Sending " << addrlen << " " << (void*) addr << " " << fi->dest_addr << std::endl;
-        //safe_call(fi_connect(ep, fi->dest_addr, NULL, 0));
-
-        memcpy(local_buf, &addrlen, sizeof(uint64_t));
-        memcpy(local_buf + sizeof(uint64_t), addr, addrlen);
-
-        std::string data = "Hello, World!";
-		Header header = {};
-		header.data_len = data.length();
-
-		memcpy(local_buf + sizeof(uint64_t) + addrlen, (char *) &header, sizeof(Header));
-		memcpy(local_buf + sizeof(uint64_t) + addrlen + sizeof(Header), data.c_str(), data.length());
-
-		std::cout << "Sending " << data << " to server" << std::endl;
-		safe_call(fi_send(ep, local_buf, sizeof(uint64_t) + addrlen + data.length() + sizeof(Header), NULL, 0, NULL));
-		//safe_call(fi_write(ep, local_buf, sizeof(uint64_t) + addrlen + data.length() + sizeof(Header), nullptr, remote_addr, 0, 0, nullptr));
-		safe_call(wait_for_completion(tx_cq));
-		std::cout << "Client done" << std::endl;
-
-	} else { // Server
-		// Connection stuff
-		std::cout << "Connecting server" << std::endl;
-
-		// Create pep
-		safe_call(fi_passive_ep(fabric, fi, &pep, nullptr));
-
-		// bind pep to eq
-		safe_call(fi_pep_bind(pep, &eq->fid, 0));
-
-		// listen
-		safe_call(fi_listen(pep));
-		//safe_call(wait_for_completion(rx_cq));
-		safe_call(retrieve_conn_req(eq, &fi));
-
-		// After processing, allocate ep
-		//safe_call(fi_endpoint(domain, fi, &ep, NULL));
-		// bind ep to same eq
-		std::cout << "Binding EQ to EP" << std::endl;
-    	safe_call(fi_ep_bind(ep, &eq->fid, 0));
-   
-
-    	safe_call(fi_enable(ep));
-		// accept on ep // make sure its OFI accept not socket accept
-		safe_call(fi_accept(ep, NULL, 0));
-		//safe_call(wait_for_completion(rx_cq));
-
-
-
-		// Communication stuff
-		std::cout << "Server: Receiving client addres" << std::endl;
-		safe_call(fi_recv(ep, remote_buf, max_msg_size, nullptr, 0, nullptr));
-		safe_call(wait_for_completion(rx_cq));
-		std::cout << "Server done" << std::endl;
-	}
+    safe_call(complete_connect(ep, eq));
 
 	return 0;
+}
+
+int server_connect() {
+	// Retrieve connection request
+	safe_call(retrieve_conn_req(eq, &fi));
+
+	safe_call(fi_domain(fabric, fi, &domain, NULL));
+
+	return 0;
+}
+
+int main(int argc, char **argv) {
+	int ret;
+
+	hints = fi_allocinfo();
+    hints->caps = FI_MSG;
+    hints->ep_attr->type = FI_EP_MSG;
+    //hints->domain_attr->mr_mode = opts.mr_mode;
+
+	// Get command line args
+    if (argc < 2) { // Server
+        std::cout << "Running as SERVER" << std::endl;
+        //safe_call(fi_getinfo(FI_VERSION(1, 6), address.c_str(), port, FI_MSG, hints, &fi));
+    } else if (argc == 2) { // Client
+        dst_addr = argv[1];
+        std::cout <<  "Running as CLIENT - server addr=" << dst_addr << std::endl;
+        //safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, port, 0, hints, &fi));
+    } else {
+        std::cout << "Too many arguments!" << std::endl;
+        return -1;
+    }
+
+    if (!dst_addr) {
+    	safe_call(start_server());
+    }
+
+    ret = dst_addr ? client_connect() : server_connect();
+    if (ret) {
+    	return ret;
+    }
+
+    // send greeting
+
+    //fi_shurdown(ep, 0)
+
+	return ret;
 }
