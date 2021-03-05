@@ -17,7 +17,7 @@
 
 static struct fid_fabric *fabric;
 static struct fid_domain *domain;
-static struct fi_info *fi, *fi_pep, *hints;
+static struct fi_info *fi, *hints;
 static struct fid_eq *eq; // Event queue
 static struct fi_eq_attr eq_attr; // Event queue data
 static struct fid_pep *pep; // Passive endpoint to listen to incoming connection requests
@@ -90,6 +90,7 @@ int retrieve_conn_req(struct fid_eq *eq, struct fi_info **fi) {
 
 	*fi = entry.info;
 	if (event != FI_CONNREQ) {
+		std::cerr << "Wrong event" << std::endl;
 		//fprintf(stderr, "Unexpected CM event %d\n", event);
 		ret = -FI_EOTHER;
 		return ret;
@@ -113,6 +114,7 @@ int complete_connect(struct fid_ep *ep, struct fid_eq *eq)
 	}
 
 	if (event != FI_CONNECTED || entry.fid != &ep->fid) {
+		std::cerr << "Wrong event" << std::endl;
 		//fprintf(stderr, "Unexpected CM event %d fid %p (ep %p)\n", event, entry.fid, ep);
 		ret = -FI_EOTHER;
 		return ret;
@@ -123,11 +125,11 @@ int complete_connect(struct fid_ep *ep, struct fid_eq *eq)
 
 int start_server(void) {
 	// Init
-	safe_call(fi_getinfo(FI_VERSION(1, 6), address.c_str(), port, FI_MSG, hints, &fi_pep));
+	//safe_call(fi_getinfo(FI_VERSION(1, 6), address.c_str(), port, FI_MSG, hints, &fi));
 
 	// Create a fabric object.
-    std::cout << "Creating fabric" << std::endl;
-    safe_call(fi_fabric(fi_pep->fabric_attr, &fabric, NULL));
+    // std::cout << "Creating fabric" << std::endl;
+    // safe_call(fi_fabric(fi->fabric_attr, &fabric, NULL));
 
     // Fabric Domain - maybe dont need
     //std::cout << "Creating domain" << std::endl;
@@ -142,7 +144,7 @@ int start_server(void) {
 
     // Create pep
     std::cout << "Creating passive endpoint" << std::endl;
-    safe_call(fi_passive_ep(fabric, fi_pep, &pep, nullptr));
+    safe_call(fi_passive_ep(fabric, fi, &pep, nullptr));
 
     // bind pep to eq
     std::cout << "Binding pep to eq" << std::endl;
@@ -156,23 +158,16 @@ int start_server(void) {
 }
 
 int client_connect() {
-	// Init
-	safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, port, 0, hints, &fi));
-
-	// Create a fabric object.
-    std::cout << "Creating fabric" << std::endl;
-    safe_call(fi_fabric(fi->fabric_attr, &fabric, NULL));
-
-    // Create and open event queue
-    std::cout << "Creating event queue" << std::endl;
-    memset(&eq_attr, 0, sizeof(eq_attr));
-    eq_attr.wait_obj = FI_WAIT_UNSPEC;
-    eq_attr.size = eq_attr.size; // Might need idk
-    safe_call(fi_eq_open(fabric, &eq_attr, &eq, NULL));
-
     // Fabric Domain
     std::cout << "Creating domain" << std::endl;
     safe_call(fi_domain(fabric, fi, &domain, NULL));
+
+    // Create and open event queue
+    std::cout << "Creating event queue" << std::endl;
+    //memset(&eq_attr, 0, sizeof(eq_attr));
+    eq_attr.wait_obj = FI_WAIT_UNSPEC;
+    eq_attr.size = eq_attr.size; // Might need idk
+    safe_call(fi_eq_open(fabric, &eq_attr, &eq, NULL));
 
     // Create rx and tx completion queues
     std::cout << "Creating tx completion queue" << std::endl;
@@ -226,15 +221,19 @@ int main(int argc, char **argv) {
 	// Get command line args
     if (argc < 2) { // Server
         std::cout << "Running as SERVER" << std::endl;
-        //safe_call(fi_getinfo(FI_VERSION(1, 6), address.c_str(), port, FI_MSG, hints, &fi));
+        safe_call(fi_getinfo(FI_VERSION(1, 6), address.c_str(), port, FI_MSG, hints, &fi));
     } else if (argc == 2) { // Client
         dst_addr = argv[1];
         std::cout <<  "Running as CLIENT - server addr=" << dst_addr << std::endl;
-        //safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, port, 0, hints, &fi));
+        safe_call(fi_getinfo(FI_VERSION(1, 6), dst_addr, port, 0, hints, &fi));
     } else {
         std::cout << "Too many arguments!" << std::endl;
         return -1;
     }
+
+    // Create a fabric object.
+    std::cout << "Creating fabric" << std::endl;
+    safe_call(fi_fabric(fi->fabric_attr, &fabric, NULL));
 
     if (!dst_addr) {
     	safe_call(start_server());
