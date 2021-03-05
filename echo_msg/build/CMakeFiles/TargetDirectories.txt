@@ -1,3 +1,0 @@
-/mnt/c/Users/jimjb/CSE498/libfabric-examples/echo_msg/build/CMakeFiles/edit_cache.dir
-/mnt/c/Users/jimjb/CSE498/libfabric-examples/echo_msg/build/CMakeFiles/rebuild_cache.dir
-/mnt/c/Users/jimjb/CSE498/libfabric-examples/echo_msg/build/CMakeFiles/echo.dir
