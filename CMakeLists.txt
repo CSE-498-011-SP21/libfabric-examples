@@ -7,3 +7,5 @@ enable_testing()
 add_subdirectory(wrappers)
 
 add_subdirectory(echo_rma)
+
+add_subdirectory(echo_msg)
